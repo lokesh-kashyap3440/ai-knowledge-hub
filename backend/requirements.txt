@@ -1,0 +1,16 @@
+fastapi 
+uvicorn 
+python-multipart
+pydantic
+python-dotenv
+sqlalchemy
+pdfplumber
+numpy
+requests
+sentence-transformers
+langchain 
+chromadb
+openai
+sse-starlette
+psycopg[binary]
+PyJWT
