@@ -46,4 +46,4 @@ yarn-error.log*
 docker-compose.override.yml
 
 # Generated docs/artifacts
-*.docx
+#*.docx
