@@ -93,7 +93,7 @@ export default function App() {
       try {
         const [meData, documentsData, messagesData] = await Promise.all([
           le('/auth/me', { token }),
-          le('/documents', { token }),
+          le('/upload/documents', { token }),
           le(`/auth/sessions/${sessionIdState}/messages`, { token }),
         ])
 
