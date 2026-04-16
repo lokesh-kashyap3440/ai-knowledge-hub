@@ -75,6 +75,16 @@ export default function App() {
   const [dragActive, setDragActive] = useState(false)
   const [isStreaming, setIsStreaming] = useState(false)
   
+  // Toast Notification System
+  const [toasts, setToasts] = useState([])
+  const addToast = (message, type = 'info') => {
+    const id = Math.random().toString(36).substring(2, 9)
+    setToasts((prev) => [...prev, { id, message, type }])
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id))
+    }, 4000)
+  }
+
   const fileInputRef = useRef(null)
   const seRef = useRef(null)
 
@@ -158,36 +168,40 @@ export default function App() {
       setToken(data.access_token)
       setUser(data.user)
       setAuthError('')
-    } catch (err) {
+      addToast(`Welcome back, ${data.user.username}!`, 'success')
+      } catch (err) {
       setAuthError(err.message || 'Authentication failed.')
-    } finally {
+      addToast(err.message || 'Authentication failed.', 'error')
+      } finally {
       setIsAuthenticating(false)
-    }
-  }
+      }
+      }
 
-  const fe = () => {
-    localStorage.removeItem('akh_token')
-    setToken('')
-    setUser(null)
-    setMessages([])
-    setDocuments([])
-    setSelectedDocuments([])
-  }
+      const fe = () => {
+      localStorage.removeItem('akh_token')
+      setToken('')
+      setUser(null)
+      setMessages([])
+      setDocuments([])
+      setSelectedDocuments([])
+      addToast('Logged out successfully.', 'info')
+      }
 
-  const pe = () => {
-    const id = generateId()
-    localStorage.setItem('akh_session_id', id)
-    setSessionIdState(id)
-    setMessages([{ id: generateId(), role: 'assistant', content: 'New session started. Select your documents and ask away.' }])
-  }
+      const pe = () => {
+      const id = generateId()
+      localStorage.setItem('akh_session_id', id)
+      setSessionIdState(id)
+      setMessages([{ id: generateId(), role: 'assistant', content: 'New session started. Select your documents and ask away.' }])
+      addToast('New session started.', 'success')
+      }
 
-  const updatePassword = async (event) => {
-    event.preventDefault()
-    setPasswordError('')
-    setPasswordMessage('')
-    setIsChangingPassword(true)
+      const updatePassword = async (event) => {
+      event.preventDefault()
+      setPasswordError('')
+      setPasswordMessage('')
+      setIsChangingPassword(true)
 
-    try {
+      try {
       const data = await le('/auth/change-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -196,32 +210,35 @@ export default function App() {
       })
       setPasswordMessage(data.message || 'Password updated successfully.')
       setPasswordForm({ current_password: '', new_password: '' })
-    } catch (error) {
+      addToast('Password updated successfully.', 'success')
+      } catch (error) {
       setPasswordError(error.message || 'Failed to update password.')
-    } finally {
+      addToast(error.message || 'Failed to update password.', 'error')
+      } finally {
       setIsChangingPassword(false)
-    }
-  }
+      }
+      }
 
-  const handleUpload = async (file) => {
-    if (!file) return
+      const handleUpload = async (file) => {
+      if (!file) return
 
-    if (documents.some((d) => d.name === file.name)) {
+      if (documents.some((d) => d.name === file.name)) {
       setUploadState({ status: 'error', detail: `${file.name} is already indexed.` })
+      addToast(`${file.name} is already indexed.`, 'warning')
       return
-    }
+      }
 
-    setIsUploading(true)
-    setUploadState({ status: 'uploading', detail: `Indexing ${file.name}...` })
+      setIsUploading(true)
+      setUploadState({ status: 'uploading', detail: `Indexing ${file.name}...` })
 
-    const formData = new FormData()
-    formData.append('file', file)
+      const formData = new FormData()
+      formData.append('file', file)
 
-    try {
+      try {
       const r = await fetch('/upload', { 
-        method: 'POST', 
-        body: formData, 
-        headers: { Authorization: `Bearer ${token}` } 
+        method: 'POST',
+        body: formData,
+        headers: { Authorization: `Bearer ${token}` }
       })
       if (!r.ok) {
         const err = await r.json().catch(() => null)
@@ -232,13 +249,14 @@ export default function App() {
       setDocuments((prev) => [...prev, nextDoc].sort((a, b) => a.name.localeCompare(b.name)))
       setSelectedDocuments((prev) => prev.includes(data.file) ? prev : [...prev, data.file])
       setUploadState({ status: 'success', detail: `${data.file} indexed successfully.` })
-    } catch (err) {
+      addToast(`${data.file} indexed successfully.`, 'success')
+      } catch (err) {
       setUploadState({ status: 'error', detail: err.message || 'Upload failed.' })
-    } finally {
+      addToast(err.message || 'Upload failed.', 'error')
+      } finally {
       setIsUploading(false)
-    }
-  }
-
+      }
+      }
   const ge = async (e) => {
     e.preventDefault()
     const n = query.trim()
@@ -550,6 +568,29 @@ export default function App() {
             </form>
           </section>
         </section>
+      </div>
+
+      {/* Global Toast Container */}
+      <div className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-3">
+        {toasts.map((toast) => (
+          <div
+            key={toast.id}
+            className={`flex items-center gap-3 rounded-2xl border px-5 py-3 shadow-2xl backdrop-blur transition-all animate-in fade-in slide-in-from-bottom-4 ${
+              toast.type === 'error'
+                ? 'border-ember/30 bg-ember/10 text-ember'
+                : toast.type === 'success'
+                ? 'border-green-500/30 bg-green-500/10 text-green-600'
+                : 'border-[#d9cab7] bg-white/90 text-[#5f5860]'
+            }`}
+          >
+            {toast.type === 'error' && (
+              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            )}
+            <span className="text-sm font-medium">{toast.message}</span>
+          </div>
+        ))}
       </div>
     </main>
   )
