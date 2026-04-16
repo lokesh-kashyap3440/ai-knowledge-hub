@@ -7,7 +7,7 @@ from services.parser import parse_pdf
 from services.chunking import chunk_text
 from services.auth import get_current_user
 from services.embedding import get_embedding
-from services.vectorstore import add_chunks, has_document, list_documents
+from services.vectorstore import add_chunks, has_document, list_documents, delete_document
 from app.db import User
 
 router = APIRouter()
@@ -60,3 +60,15 @@ async def upload(file: UploadFile, current_user: User = Depends(get_current_user
 @router.get("/documents")
 def documents(current_user: User = Depends(get_current_user)):
     return {"documents": list_documents()}
+
+
+@router.delete("/documents/{filename}")
+def remove_document(filename: str, current_user: User = Depends(get_current_user)):
+    if not has_document(filename):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document {filename} not found."
+        )
+    
+    delete_document(filename)
+    return {"status": "deleted", "filename": filename}
