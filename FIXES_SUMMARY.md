@@ -71,7 +71,15 @@ async def event_stream():
   - These relative paths are correctly handled by the **Nginx proxy** (in production/Docker) or **Vite proxy** (in development), avoiding CORS issues entirely by making requests same-origin.
   - Expanded `backend/app/main.py` CORS `allow_origins` to include `http://localhost`, `http://127.0.0.1`, and other common development variants.
 
+### 4. Chat History Persistence Fix
+- **Issue**: Message history was not being stored correctly during streaming.
+- **Root Cause**: The database session used in the background `event_stream` generator was being closed by FastAPI's request lifecycle before the stream finished.
+- **Fix**: 
+  - Modified `backend/routes/chat.py` to create a dedicated `SessionLocal()` for the background generator.
+  - Wrapped the generator in a `try/finally` block to ensure the session is always closed after the assistant's response is committed to the database.
+
 ## Verification
 - ✓ `frontend/.env` updated to use relative paths.
 - ✓ Backend CORS configuration expanded for robustness.
 - ✓ Nginx and Vite proxy configurations verified to match relative paths.
+- ✓ Chat history now persists across browser refreshes and sessions.

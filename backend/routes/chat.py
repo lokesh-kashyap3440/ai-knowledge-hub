@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.db import ChatMessage, ChatSession, User, get_db
+from app.db import ChatMessage, ChatSession, User, get_db, SessionLocal
 from services.auth import get_current_user
 from services.rag import ask, stream_answer
 
@@ -113,18 +113,25 @@ async def chat_stream(
     db.commit()
 
     async def event_stream():
-        answer_parts = []
-        async for chunk in stream_answer(q.query, q.selected_documents):
-            yield f"data: {json.dumps(chunk)}\n\n"
-            if chunk.get("data"):
-                answer_parts.append(chunk["data"])
-        db.add(
-            ChatMessage(
-                session_id=q.session_id,
-                role="assistant",
-                content="".join(answer_parts),
-            )
-        )
-        db.commit()
+        # Create a new session for the generator because the request's 'db' session
+        # might be closed by FastAPI after chat_stream returns the StreamingResponse.
+        stream_db = SessionLocal()
+        try:
+            answer_parts = []
+            async for chunk in stream_answer(q.query, q.selected_documents):
+                yield f"data: {json.dumps(chunk)}\n\n"
+                if chunk.get("data"):
+                    answer_parts.append(chunk["data"])
+            
+            if answer_parts:
+                assistant_message = ChatMessage(
+                    session_id=q.session_id,
+                    role="assistant",
+                    content="".join(answer_parts),
+                )
+                stream_db.add(assistant_message)
+                stream_db.commit()
+        finally:
+            stream_db.close()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
