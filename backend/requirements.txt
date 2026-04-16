@@ -14,3 +14,8 @@ openai
 sse-starlette
 psycopg[binary]
 PyJWT
+
+# Testing
+pytest
+pytest-cov
+httpx

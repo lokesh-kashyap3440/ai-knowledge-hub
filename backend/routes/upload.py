@@ -14,7 +14,7 @@ router = APIRouter()
 EMBEDDING_WORKERS = 4
 
 
-@router.post("/upload")
+@router.post("")
 async def upload(file: UploadFile, current_user: User = Depends(get_current_user)):
     if has_document(file.filename):
         raise HTTPException(

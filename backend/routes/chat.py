@@ -88,7 +88,7 @@ def _ensure_session(db: Session, session_id: str, current_user: User, query: str
     return session
 
 
-@router.post("/chat")
+@router.post("")
 def chat(
     q: Query,
     db: Session = Depends(get_db),
@@ -102,7 +102,7 @@ def chat(
     return {"answer": answer}
 
 
-@router.post("/chat/stream")
+@router.post("/stream")
 async def chat_stream(
     q: Query,
     db: Session = Depends(get_db),
