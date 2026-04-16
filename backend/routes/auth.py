@@ -6,7 +6,7 @@ from app.db import ChatMessage, ChatSession, User, get_db
 from services.auth import create_access_token, get_current_user, hash_password, verify_password
 
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter()
 
 
 class Credentials(BaseModel):
