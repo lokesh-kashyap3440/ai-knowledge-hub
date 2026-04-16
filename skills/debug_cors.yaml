@@ -1,0 +1,123 @@
+--
+name: debug-cors-frontend-backend
+category: debugging
+description: Debugging CORS issues between frontend and backend services
+--
+
+## Problem Pattern
+When frontend and backend are served from different origins, CORS (Cross-Origin Resource Sharing) policies can block API requests, resulting in "Failed to fetch" errors even though the backend API works via Swagger/curl.
+
+## Diagnostic Steps
+
+### 1. Verify Backend API Works
+```bash
+# Test backend directly (should work)
+curl -X POST http://localhost:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"test","password":"test123456"}'
+```
+
+### 2. Check CORS Headers
+```bash
+# Test with Origin header (simulates browser request)
+curl -v -X POST http://localhost:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -H "Origin: http://localhost:5173" \
+  -d '{"username":"test","password":"test123456"}' 2>&1 | grep -i "access-control"
+```
+
+### 3. Check for Preflight (OPTIONS) Response
+```bash
+curl -v -X OPTIONS http://localhost:8000/auth/register \
+  -H "Origin: http://localhost:5173" \
+  -H "Access-Control-Request-Method: POST" 2>&1 | grep -i "access-control"
+```
+
+## Common Issues and Fixes
+
+### Issue 1: Missing CORS Headers
+**Symptom:** Backend works via curl but fails in browser with CORS error.
+
+**Fix:** Ensure CORS middleware is configured with correct origins:
+```python
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:8000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+```
+
+**Note:** CORS middleware MUST be added before routes are included.
+
+### Issue 2: Docker Networking
+**Symptom:** Works on host but fails in Docker containers.
+
+**Root Cause:** `localhost` inside a container refers to the container itself, not the backend service.
+
+**Fix:** Use Docker service names in environment variables:
+```env
+# frontend/.env
+VITE_BACKEND_URL=http://backend-service:8000
+# or for local development using Vite proxy
+VITE_BACKEND_URL=
+# or if using host-mapped ports directly from browser
+VITE_BACKEND_URL=http://localhost:8000
+# NOTE: DO NOT use Docker service names (like 'ai_knowledge_hub_backend') in VITE_BACKEND_URL
+# unless you are doing server-side rendering (SSR), as the BROWSER cannot resolve them.
+```
+
+### Issue 3: Mixed Content (HTTP vs HTTPS)
+**Symptom:** Browser blocks requests due to insecure origins.
+
+**Fix:** Ensure both frontend and backend use consistent protocols (both HTTP or both HTTPS) during development.
+
+### Issue 4: Browser Caching CORS Errors
+**Symptom:** CORS errors persist after fixing configuration.
+
+**Fix:** Clear browser cache or use incognito mode, or restart containers for fresh state.
+
+## Docker Compose Setup
+For Docker-based development, ensure proper networking:
+```yaml
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "5173:80"  # Nginx serves on port 80 in container
+    
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    # Backend accessible via service name "backend" within Docker network
+```
+
+## Verification Checklist
+- [ ] Backend API works via curl (without Origin header)
+- [ ] CORS headers present in response (access-control-allow-origin)
+- [ ] Preflight OPTIONS request returns 200 with proper headers
+- [ ] Frontend .env uses correct backend URL for deployment mode
+- [ ] Docker containers can communicate via service names
+- [ ] No browser console CORS errors
+
+## Testing Commands
+```bash
+# Test registration
+docker exec frontend_container curl -X POST http://backend:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"test","password":"test123456"}'
+
+# Test login
+docker exec frontend_container curl -X POST http://backend:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"test","password":"test123456"}'
+```
+
+## Key Insights
+1. CORS is enforced by browsers, not backend servers
+2. Backend must explicitly allow origins via CORS middleware
+3. Docker containers need service discovery via Docker DNS
+4. Browser dev tools may cache CORS errors - restart browser/containers
+5. Always test API calls with Origin header to simulate browser behavior

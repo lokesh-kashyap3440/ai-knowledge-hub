@@ -22,11 +22,14 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    salt_hex, digest_hex = password_hash.split(":")
-    salt = bytes.fromhex(salt_hex)
-    expected = bytes.fromhex(digest_hex)
-    provided = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 100_000)
-    return hmac.compare_digest(expected, provided)
+    try:
+        salt_hex, digest_hex = password_hash.split(":", 1)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(digest_hex)
+        provided = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 100_000)
+        return hmac.compare_digest(expected, provided)
+    except Exception:
+        return False
 
 
 def create_access_token(user: User) -> str:

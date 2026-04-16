@@ -1,12 +1,7 @@
+import { generateId } from "./uuid"
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-
-const quickPrompts = [
-  'Summarize the uploaded document in 5 bullets.',
-  'What are the key risks or action items?',
-  'Pull out the most important numbers and dates.',
-]
 
 const stats = [
   { label: 'Search layer', value: 'ChromaDB' },
@@ -14,19 +9,56 @@ const stats = [
   { label: 'Upload flow', value: 'PDF ready' },
 ]
 
-const storedToken = localStorage.getItem('akh_token') || ''
-const storedSessionId = localStorage.getItem('akh_session_id') || crypto.randomUUID()
+const quickPrompts = [
+  'Summarize the uploaded document in 5 bullets.',
+  'What are the key risks or action items?',
+  'Pull out the most important numbers and dates.',
+]
 
-if (!localStorage.getItem('akh_session_id')) {
-  localStorage.setItem('akh_session_id', storedSessionId)
+const generateSessionId = () => {
+  return generateId()
 }
 
-function App() {
+function le(t, { token: n, ...r } = {}) {
+  const base = import.meta.env.VITE_BACKEND_URL || ''
+  const url = t.startsWith('http') ? t : `${base}${t}`
+  const controller = new AbortController()
+  const req = fetch(url, {
+    ...r,
+    headers: {
+      ...r.headers,
+      ...(n ? { Authorization: `Bearer ${n}` } : {}),
+    },
+    signal: controller.signal,
+  })
+    .then((res) => {
+      if (!res.ok) {
+        return res.json().then((e) => {
+          throw Error(e?.detail || e?.message || `Request failed with status ${res.status}`)
+        }).catch(() => {
+          throw Error(`Request failed with status ${res.status}: ${res.statusText}`)
+        })
+      }
+      return res.json()
+    })
+    .catch((err) => {
+      controller.abort()
+      throw err
+    })
+  req.abort = () => controller.abort()
+  return req
+}
+
+export default function App() {
+  const storedToken = localStorage.getItem('akh_token') || ''
+  const initialSessionId = localStorage.getItem('akh_session_id') || generateSessionId()
+  if (!localStorage.getItem('akh_session_id')) localStorage.setItem('akh_session_id', initialSessionId)
+
   const [token, setToken] = useState(storedToken)
   const [user, setUser] = useState(null)
-  const [sessionId, setSessionId] = useState(storedSessionId)
+  const [sessionIdState, setSessionIdState] = useState(initialSessionId)
   const [authMode, setAuthMode] = useState('login')
-  const [authForm, setAuthForm] = useState({ username: '', password: '' })
+  const [authForm, setAuthForm] = useState({ username: '', password: '', confirmPassword: '' })
   const [authError, setAuthError] = useState('')
   const [isAuthenticating, setIsAuthenticating] = useState(false)
   const [passwordForm, setPasswordForm] = useState({ current_password: '', new_password: '' })
@@ -37,32 +69,21 @@ function App() {
   const [documents, setDocuments] = useState([])
   const [selectedDocuments, setSelectedDocuments] = useState([])
   const [isLoadingDocuments, setIsLoadingDocuments] = useState(true)
-  const [messages, setMessages] = useState([
-    {
-      role: 'assistant',
-      content:
-        'Upload a PDF or choose from indexed documents, then ask a question. I will stream the answer from the selected document set.',
-    },
-  ])
+  const [messages, setMessages] = useState([])
   const [uploadState, setUploadState] = useState({ status: 'idle', detail: 'No file uploaded yet.' })
   const [isUploading, setIsUploading] = useState(false)
-  const [isStreaming, setIsStreaming] = useState(false)
   const [dragActive, setDragActive] = useState(false)
+  const [isStreaming, setIsStreaming] = useState(false)
+  
   const fileInputRef = useRef(null)
-  const abortRef = useRef(null)
+  const seRef = useRef(null)
 
   useEffect(() => {
     if (!token) {
+      setMessages([{ role: 'assistant', content: 'Sign in to see indexed documents, upload new PDFs, and continue your saved chat session.' }])
+      setUser(null)
       setDocuments([])
       setSelectedDocuments([])
-      setMessages([
-        {
-          role: 'assistant',
-          content:
-            'Sign in to see indexed documents, upload new PDFs, and continue your saved chat session.',
-        },
-      ])
-      setUser(null)
       setIsLoadingDocuments(false)
       return
     }
@@ -71,114 +92,93 @@ function App() {
       setIsLoadingDocuments(true)
       try {
         const [meData, documentsData, messagesData] = await Promise.all([
-          apiFetch('/auth/me', { token }),
-          apiFetch('/documents', { token }),
-          apiFetch(`/auth/sessions/${sessionId}/messages`, { token }),
+          le('/auth/me', { token }),
+          le('/documents', { token }),
+          le(`/auth/sessions/${sessionIdState}/messages`, { token }),
         ])
 
         setUser(meData)
-        const data = documentsData
-        const nextDocuments = data.documents || []
+        const nextDocuments = documentsData.documents || []
         setDocuments(nextDocuments)
         setSelectedDocuments((current) =>
-          current.filter((document) =>
-            nextDocuments.some((item) => item.name === document),
+          current.filter((docName) =>
+            nextDocuments.some((item) => item.name === docName),
           ),
         )
         if (messagesData.messages?.length) {
           setMessages(messagesData.messages)
+        } else {
+          setMessages([{ role: 'assistant', content: 'Welcome back! Select your documents and start chatting.' }])
         }
-      } catch (_error) {
+      } catch (e) {
         setDocuments([])
+        setMessages([{ role: 'assistant', content: 'Unable to fetch session — please sign in again.' }])
       } finally {
         setIsLoadingDocuments(false)
       }
     }
 
     loadDocuments()
-  }, [token, sessionId])
+  }, [token, sessionIdState])
 
   const lastAssistantMessage = useMemo(
-    () => [...messages].reverse().find((message) => message.role === 'assistant')?.content ?? '',
-    [messages],
+    () => [...messages].reverse().find((m) => m.role === 'assistant')?.content ?? '',
+    [messages]
   )
 
-  const updateStreamingMessage = (chunk) => {
-    setMessages((current) =>
-      current.map((message) =>
-        message.id === 'streaming'
-          ? { ...message, content: `${message.content}${chunk}` }
-          : message,
-      ),
-    )
-  }
-
-  const finishStreamingMessage = () => {
-    setMessages((current) =>
-      current.map((message) =>
-        message.id === 'streaming' ? { ...message, id: crypto.randomUUID() } : message,
-      ),
-    )
-  }
-
-  const apiFetch = async (url, { token: authToken = token, headers = {}, ...options } = {}) => {
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        ...headers,
-        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
-      },
-    })
-
-    if (!response.ok) {
-      const errorPayload = await response.json().catch(() => null)
-      throw new Error(errorPayload?.detail || `Request failed with status ${response.status}`)
-    }
-
-    return response.json()
-  }
-
-  const submitAuth = async (event) => {
-    event.preventDefault()
+  const de = async (e) => {
+    e.preventDefault()
     setIsAuthenticating(true)
     setAuthError('')
 
+    if (authMode === 'register') {
+      if (authForm.password.length < 8) {
+        setAuthError('Password must be at least 8 characters.')
+        setIsAuthenticating(false)
+        return
+      }
+      if (authForm.password !== authForm.confirmPassword) {
+        setAuthError('Passwords do not match.')
+        setIsAuthenticating(false)
+        return
+      }
+    }
+
+    const payload = authMode === 'register'
+      ? { username: authForm.username, password: authForm.password }
+      : { username: authForm.username, password: authForm.password }
+
     try {
-      const data = await apiFetch(`/auth/${authMode}`, {
-        token: '',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(authForm),
+      const data = await le(`/auth/${authMode}`, { 
+        method: 'POST', 
+        headers: { 'Content-Type': 'application/json' }, 
+        body: JSON.stringify(payload) 
       })
       localStorage.setItem('akh_token', data.access_token)
       setToken(data.access_token)
       setUser(data.user)
-    } catch (error) {
-      setAuthError(error.message || 'Authentication failed.')
+      setAuthError('')
+    } catch (err) {
+      setAuthError(err.message || 'Authentication failed.')
     } finally {
       setIsAuthenticating(false)
     }
   }
 
-  const logout = () => {
+  const fe = () => {
     localStorage.removeItem('akh_token')
     setToken('')
     setUser(null)
+    setMessages([])
     setDocuments([])
     setSelectedDocuments([])
   }
 
-  const startNewSession = () => {
-    const nextSessionId = crypto.randomUUID()
-    localStorage.setItem('akh_session_id', nextSessionId)
-    setSessionId(nextSessionId)
-    setMessages([
-      {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: 'New session started. Select your documents and ask away.',
-      },
-    ])
+  const pe = () => {
+    const id = generateId()
+    localStorage.setItem('akh_session_id', id)
+    setSessionIdState(id)
+    setMessages([{ id: generateId(), role: 'assistant', content: 'New session started. Select your documents and ask away.' }])
   }
 
   const updatePassword = async (event) => {
@@ -188,10 +188,11 @@ function App() {
     setIsChangingPassword(true)
 
     try {
-      const data = await apiFetch('/auth/change-password', {
+      const data = await le('/auth/change-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(passwordForm),
+        token
       })
       setPasswordMessage(data.message || 'Password updated successfully.')
       setPasswordForm({ current_password: '', new_password: '' })
@@ -205,11 +206,8 @@ function App() {
   const handleUpload = async (file) => {
     if (!file) return
 
-    if (documents.some((document) => document.name === file.name)) {
-      setUploadState({
-        status: 'error',
-        detail: `${file.name} is already indexed. Select it from the library instead of uploading it again.`,
-      })
+    if (documents.some((d) => d.name === file.name)) {
+      setUploadState({ status: 'error', detail: `${file.name} is already indexed.` })
       return
     }
 
@@ -220,151 +218,84 @@ function App() {
     formData.append('file', file)
 
     try {
-      const response = await fetch('/upload', {
-        method: 'POST',
-        body: formData,
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+      const r = await fetch('/upload', { 
+        method: 'POST', 
+        body: formData, 
+        headers: { Authorization: `Bearer ${token}` } 
       })
-
-      if (!response.ok) {
-        const errorPayload = await response.json().catch(() => null)
-        throw new Error(
-          errorPayload?.detail || `Upload failed with status ${response.status}`,
-        )
+      if (!r.ok) {
+        const err = await r.json().catch(() => null)
+        throw Error(err?.detail || `Upload failed with status ${r.status}`)
       }
-
-      const data = await response.json()
-      const nextDocument = { name: data.file, chunks: data.chunks }
-      setDocuments((current) =>
-        [...current, nextDocument].sort((left, right) =>
-          left.name.localeCompare(right.name),
-        ),
-      )
-      setSelectedDocuments((current) =>
-        current.includes(data.file) ? current : [...current, data.file],
-      )
-      setUploadState({
-        status: 'success',
-        detail: `${file.name} indexed successfully with ${data.chunks} chunks.`,
-      })
-    } catch (error) {
-      setUploadState({
-        status: 'error',
-        detail: error.message || 'Upload failed.',
-      })
+      const data = await r.json()
+      const nextDoc = { name: data.file, chunks: data.chunks }
+      setDocuments((prev) => [...prev, nextDoc].sort((a, b) => a.name.localeCompare(b.name)))
+      setSelectedDocuments((prev) => prev.includes(data.file) ? prev : [...prev, data.file])
+      setUploadState({ status: 'success', detail: `${data.file} indexed successfully.` })
+    } catch (err) {
+      setUploadState({ status: 'error', detail: err.message || 'Upload failed.' })
     } finally {
       setIsUploading(false)
     }
   }
 
-  const sendQuery = async (nextQuery) => {
-    const trimmed = nextQuery.trim()
-    if (!trimmed || isStreaming) return
+  const ge = async (e) => {
+    e.preventDefault()
+    const n = query.trim()
+    if (!n || isStreaming) return
     if (!selectedDocuments.length) {
-      setMessages((current) => [
-        ...current,
-        {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: 'Select at least one indexed document before starting a chat.',
-        },
-      ])
+      setMessages((prev) => [...prev, { id: generateId(), role: 'assistant', content: 'Select documents first.' }])
       return
     }
 
-    abortRef.current?.abort()
-
-    setMessages((current) => [
-      ...current,
-      { id: crypto.randomUUID(), role: 'user', content: trimmed },
-      { id: 'streaming', role: 'assistant', content: '' },
-    ])
+    seRef.current?.abort()
+    setMessages((prev) => [...prev, { id: generateId(), role: 'user', content: n }, { id: 'streaming', role: 'assistant', content: '' }])
     setQuery('')
     setIsStreaming(true)
 
     const controller = new AbortController()
-    abortRef.current = controller
+    seRef.current = controller
 
     try {
-      const response = await fetch('/chat/stream', {
+      const res = await fetch('/chat/stream', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          query: trimmed,
-          selected_documents: selectedDocuments,
-          session_id: sessionId,
-        }),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ query: n, selected_documents: selectedDocuments, session_id: sessionIdState }),
         signal: controller.signal,
       })
-
-      if (!response.ok || !response.body) {
-        throw new Error(`Streaming failed with status ${response.status}`)
-      }
-
-      const reader = response.body.getReader()
+      if (!res.ok || !res.body) throw Error(`Streaming failed with status ${res.status}`)
+      
+      const reader = res.body.getReader()
       const decoder = new TextDecoder()
-      let buffer = ''
-
+      let s = ''
       while (true) {
-        const { value, done } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const events = buffer.split('\n\n')
-        buffer = events.pop() ?? ''
-
-        for (const event of events) {
-          const line = event
-            .split('\n')
-            .find((entry) => entry.startsWith('data: '))
-
-          if (!line) continue
-
-          const payload = JSON.parse(line.replace('data: ', ''))
-          if (payload.data) {
-            updateStreamingMessage(payload.data)
+        const { value: d, done: t } = await reader.read()
+        if (t) break
+        s += decoder.decode(d, { stream: true })
+        const p = s.split('\n\n')
+        s = p.pop() || ''
+        for (const c of p) {
+          const u = c.split('\n').find((l) => l.startsWith('data: '))
+          if (!u) continue
+          const v = JSON.parse(u.replace('data: ', ''))
+          if (v.data) {
+            setMessages((prev) => prev.map((m) => (m.id === 'streaming' ? { ...m, content: `${m.content}${v.data}` } : m)))
           }
         }
       }
-
-      finishStreamingMessage()
-    } catch (error) {
-      if (error.name === 'AbortError') {
-        setMessages((current) =>
-          current.filter((message) => message.id !== 'streaming'),
-        )
-      } else {
-        setMessages((current) =>
-          current.map((message) =>
-            message.id === 'streaming'
-              ? {
-                  ...message,
-                  id: crypto.randomUUID(),
-                  content:
-                    message.content ||
-                    `I ran into a streaming error: ${error.message || 'unknown error'}`,
-                }
-              : message,
-          ),
-        )
+      setMessages((prev) => prev.map((m) => m.id === 'streaming' ? { ...m, id: generateId() } : m))
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        setMessages((prev) => prev.map((m) => m.id === 'streaming' ? { ...m, id: generateId(), content: m.content || `Error: ${err.message}` } : m))
       }
     } finally {
       setIsStreaming(false)
-      abortRef.current = null
+      seRef.current = null
     }
   }
 
-  const toggleDocumentSelection = (name) => {
-    setSelectedDocuments((current) =>
-      current.includes(name)
-        ? current.filter((document) => document !== name)
-        : [...current, name],
-    )
+  const toggleDoc = (name) => {
+    setSelectedDocuments((prev) => prev.includes(name) ? prev.filter((d) => d !== name) : [...prev, name])
   }
 
   if (!token) {
@@ -374,37 +305,51 @@ function App() {
           <section className="w-full rounded-[1.75rem] border border-[#d7c9b8] bg-white/80 p-8">
             <p className="text-xs uppercase tracking-[0.3em] text-ocean">Secure Access</p>
             <h1 className="mt-3 font-display text-4xl font-semibold text-ink">
-              Sign in to your knowledge vault
+              {authMode === 'login' ? 'Sign in to your knowledge vault' : 'Create your account'}
             </h1>
             <p className="mt-4 text-sm leading-7 text-[#5f5a63]">
-              JWT authentication protects uploads, indexed documents, and your saved chat history in PostgreSQL.
+              JWT authentication protects uploads, indexed documents, and your saved chat history.
             </p>
-            <form className="mt-8 space-y-4" onSubmit={submitAuth}>
+            <form className="mt-8 space-y-4" onSubmit={de}>
               <input
                 value={authForm.username}
-                onChange={(event) => setAuthForm((current) => ({ ...current, username: event.target.value }))}
+                onChange={(e) => setAuthForm({ ...authForm, username: e.target.value })}
                 placeholder="Username"
                 className="w-full rounded-2xl border border-[#e1d5c6] bg-[#fffaf4] px-4 py-3 outline-none"
+                required
               />
               <input
                 type="password"
                 value={authForm.password}
-                onChange={(event) => setAuthForm((current) => ({ ...current, password: event.target.value }))}
+                onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
                 placeholder="Password"
                 className="w-full rounded-2xl border border-[#e1d5c6] bg-[#fffaf4] px-4 py-3 outline-none"
+                required
+                minLength={8}
               />
-              {authError ? <p className="text-sm text-ember">{authError}</p> : null}
+              {authMode === 'register' && (
+                <input
+                  type="password"
+                  value={authForm.confirmPassword}
+                  onChange={(e) => setAuthForm({ ...authForm, confirmPassword: e.target.value })}
+                  placeholder="Confirm Password"
+                  className="w-full rounded-2xl border border-[#e1d5c6] bg-[#fffaf4] px-4 py-3 outline-none"
+                  required
+                  minLength={8}
+                />
+              )}
+              {authError && <p className="text-sm text-ember">{authError}</p>}
               <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="submit"
                   disabled={isAuthenticating}
                   className="rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-white transition hover:bg-ocean disabled:cursor-not-allowed disabled:bg-[#b9b1a8]"
                 >
-                  {isAuthenticating ? 'Working...' : authMode === 'login' ? 'Login' : 'Create account'}
+                  {isAuthenticating ? 'Working...' : authMode === 'login' ? 'Login' : 'Register'}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setAuthMode((current) => (current === 'login' ? 'register' : 'login'))}
+                  onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthError(''); }}
                   className="rounded-full border border-[#d9cab7] px-4 py-2 text-sm text-[#5f5860]"
                 >
                   {authMode === 'login' ? 'Need an account?' : 'Have an account?'}
@@ -432,48 +377,27 @@ function App() {
               <span className="rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs text-white/70">
                 {user?.username}
               </span>
-              <button
-                type="button"
-                onClick={logout}
-                className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-ink transition hover:bg-[#ffe8d8]"
-              >
-                Logout
-              </button>
             </div>
             <h1 className="max-w-2xl font-display text-4xl font-semibold leading-tight text-white sm:text-5xl">
               A document copilot that feels cinematic instead of clinical.
             </h1>
             <p className="mt-5 max-w-2xl text-sm leading-7 text-white/72 sm:text-base">
               Drop in PDFs, index them through your backend, and watch answers arrive
-              token by token in a workspace designed to feel more like a crafted tool
-              than a default dashboard.
+              token by token in a workspace designed to feel more like a crafted tool.
             </p>
             <div className="mt-8 grid gap-3 sm:grid-cols-3">
               {stats.map((stat) => (
-                <div
-                  key={stat.label}
-                  className="rounded-2xl border border-white/15 bg-white/5 p-4"
-                >
-                  <p className="text-xs uppercase tracking-[0.24em] text-white/45">
-                    {stat.label}
-                  </p>
+                <div key={stat.label} className="rounded-2xl border border-white/15 bg-white/5 p-4">
+                  <p className="text-xs uppercase tracking-[0.24em] text-white/45">{stat.label}</p>
                   <p className="mt-3 text-lg font-semibold text-white">{stat.value}</p>
                 </div>
               ))}
             </div>
             <div className="mt-6 flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={startNewSession}
-                className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm text-white"
-              >
+              <button onClick={pe} className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm text-white hover:bg-white/10 transition">
                 New session
               </button>
-              <button
-                type="button"
-                onClick={logout}
-                className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm text-white"
-              >
+              <button onClick={fe} className="rounded-full border border-white/15 bg-white/5 px-4 py-2 text-sm text-white hover:bg-white/10 transition">
                 Logout
               </button>
             </div>
@@ -483,26 +407,16 @@ function App() {
             className={`rounded-[1.75rem] border border-[#d7c9b8] bg-white/70 p-5 transition ${
               dragActive ? 'scale-[1.01] border-ember shadow-[0_0_0_6px_rgba(240,109,79,0.12)]' : ''
             }`}
-            onDragOver={(event) => {
-              event.preventDefault()
-              setDragActive(true)
-            }}
+            onDragOver={(e) => { e.preventDefault(); setDragActive(true); }}
             onDragLeave={() => setDragActive(false)}
-            onDrop={(event) => {
-              event.preventDefault()
-              setDragActive(false)
-              handleUpload(event.dataTransfer.files?.[0])
-            }}
+            onDrop={(e) => { e.preventDefault(); setDragActive(false); handleUpload(e.dataTransfer.files?.[0]); }}
           >
             <div className="flex h-full flex-col justify-between gap-6">
               <div>
                 <p className="text-xs uppercase tracking-[0.3em] text-ocean">Document intake</p>
-                <h2 className="mt-3 font-display text-3xl font-semibold text-ink">
-                  Feed the vault
-                </h2>
+                <h2 className="mt-3 font-display text-3xl font-semibold text-ink">Feed the vault</h2>
                 <p className="mt-3 max-w-md text-sm leading-7 text-[#5f5a63]">
-                  Upload a PDF once, then reuse it from your indexed library whenever
-                  you want to chat across one or many documents.
+                  Upload a PDF once, then reuse it from your indexed library.
                 </p>
               </div>
 
@@ -513,37 +427,23 @@ function App() {
                   <input
                     type="password"
                     value={passwordForm.current_password}
-                    onChange={(event) =>
-                      setPasswordForm((current) => ({
-                        ...current,
-                        current_password: event.target.value,
-                      }))
-                    }
+                    onChange={(e) => setPasswordForm({ ...passwordForm, current_password: e.target.value })}
                     placeholder="Current password"
                     className="w-full rounded-xl border border-[#e1d5c6] bg-white px-3 py-2 text-sm outline-none"
                   />
                   <input
                     type="password"
                     value={passwordForm.new_password}
-                    onChange={(event) =>
-                      setPasswordForm((current) => ({
-                        ...current,
-                        new_password: event.target.value,
-                      }))
-                    }
+                    onChange={(e) => setPasswordForm({ ...passwordForm, new_password: e.target.value })}
                     placeholder="New password (min 8 chars)"
                     className="w-full rounded-xl border border-[#e1d5c6] bg-white px-3 py-2 text-sm outline-none"
                   />
                   <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="submit"
-                      disabled={isChangingPassword}
-                      className="rounded-full border border-[#d9cab7] px-4 py-2 text-xs text-[#5f5860] transition hover:border-ocean hover:text-ocean disabled:cursor-not-allowed"
-                    >
+                    <button disabled={isChangingPassword} className="rounded-full border border-[#d9cab7] px-4 py-2 text-xs text-[#5f5860] hover:border-ocean hover:text-ocean transition">
                       {isChangingPassword ? 'Updating...' : 'Update password'}
                     </button>
-                    {passwordMessage ? <p className="text-xs text-leaf">{passwordMessage}</p> : null}
-                    {passwordError ? <p className="text-xs text-ember">{passwordError}</p> : null}
+                    {passwordMessage && <p className="text-xs text-leaf">{passwordMessage}</p>}
+                    {passwordError && <p className="text-xs text-ember">{passwordError}</p>}
                   </div>
                 </form>
               </div>
@@ -556,93 +456,41 @@ function App() {
                 <div className="flex items-center justify-between gap-4">
                   <div>
                     <p className="font-display text-2xl font-semibold text-ink">
-                      {isUploading ? 'Indexing your file...' : 'Choose or drop a PDF'}
+                      {isUploading ? 'Indexing...' : 'Choose or drop a PDF'}
                     </p>
-                    <p className="mt-2 text-sm text-[#6d6771]">
-                      {uploadState.detail}
-                    </p>
+                    <p className="mt-2 text-sm text-[#6d6771]">{uploadState.detail}</p>
                   </div>
-                  <div className="rounded-full bg-ink px-4 py-4 text-sm font-medium text-white transition group-hover:bg-ember">
-                    Upload
-                  </div>
+                  <div className="rounded-full bg-ink px-4 py-4 text-sm font-medium text-white transition group-hover:bg-ember">Upload</div>
                 </div>
               </button>
-
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="application/pdf"
-                className="hidden"
-                onChange={(event) => handleUpload(event.target.files?.[0])}
-              />
+              <input ref={fileInputRef} type="file" accept="application/pdf" className="hidden" onChange={(e) => handleUpload(e.target.files?.[0])} />
 
               <div className="flex items-center gap-3">
-                <span
-                  className={`h-3 w-3 rounded-full ${
-                    uploadState.status === 'success'
-                      ? 'bg-leaf'
-                      : uploadState.status === 'error'
-                        ? 'bg-ember'
-                        : uploadState.status === 'uploading'
-                          ? 'bg-gold animate-pulse'
-                          : 'bg-[#bfb6aa]'
-                  }`}
-                />
+                <span className={`h-3 w-3 rounded-full ${uploadState.status === 'success' ? 'bg-leaf' : uploadState.status === 'error' ? 'bg-ember' : uploadState.status === 'uploading' ? 'bg-gold animate-pulse' : 'bg-[#bfb6aa]'}`} />
                 <p className="text-sm text-[#645d67]">
-                  {uploadState.status === 'success'
-                    ? 'Knowledge base is primed.'
-                    : uploadState.status === 'error'
-                      ? 'Upload needs attention.'
-                      : uploadState.status === 'uploading'
-                        ? 'Processing document now.'
-                        : 'Waiting for your first document.'}
+                  {uploadState.status === 'success' ? 'Knowledge base is primed.' : uploadState.status === 'error' ? 'Upload failed.' : uploadState.status === 'uploading' ? 'Processing...' : 'Waiting for document.'}
                 </p>
               </div>
 
               <div className="rounded-[1.5rem] border border-[#e7dcca] bg-[#fffaf4] p-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <p className="text-xs uppercase tracking-[0.24em] text-ocean">
-                      Indexed library
-                    </p>
+                    <p className="text-xs uppercase tracking-[0.24em] text-ocean">Indexed library</p>
                     <p className="mt-2 text-sm text-[#655f68]">
-                      {isLoadingDocuments
-                        ? 'Loading indexed documents...'
-                        : documents.length
-                          ? 'Pick one or more documents to scope your chat.'
-                          : 'No indexed documents yet.'}
+                      {isLoadingDocuments ? 'Loading...' : documents.length ? 'Pick documents to scope chat.' : 'No docs yet.'}
                     </p>
                   </div>
-                  <div className="rounded-full bg-ink px-3 py-1 text-xs text-white">
-                    {documents.length} docs
-                  </div>
+                  <div className="rounded-full bg-ink px-3 py-1 text-xs text-white">{documents.length} docs</div>
                 </div>
-
                 <div className="mt-4 max-h-56 space-y-2 overflow-y-auto pr-1">
-                  {documents.map((document) => {
-                    const isSelected = selectedDocuments.includes(document.name)
+                  {documents.map((doc) => {
+                    const isSelected = selectedDocuments.includes(doc.name)
                     return (
-                      <label
-                        key={document.name}
-                        className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-3 py-3 transition ${
-                          isSelected
-                            ? 'border-ocean bg-[#eef7fa]'
-                            : 'border-[#eadfce] bg-white hover:border-[#d8c7b3]'
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => toggleDocumentSelection(document.name)}
-                          className="mt-1 h-4 w-4 rounded border-[#cdb79f] text-ocean focus:ring-ocean"
-                        />
+                      <label key={doc.name} className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-3 py-3 transition ${isSelected ? 'border-ocean bg-[#eef7fa]' : 'border-[#eadfce] bg-white hover:border-[#d8c7b3]'}`}>
+                        <input type="checkbox" checked={isSelected} onChange={() => toggleDoc(doc.name)} className="mt-1 h-4 w-4 rounded border-[#cdb79f] text-ocean focus:ring-ocean" />
                         <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-ink">
-                            {document.name}
-                          </p>
-                          <p className="mt-1 text-xs uppercase tracking-[0.2em] text-[#81766d]">
-                            {document.chunks} chunks indexed
-                          </p>
+                          <p className="truncate text-sm font-medium text-ink">{doc.name}</p>
+                          <p className="mt-1 text-xs uppercase tracking-[0.2em] text-[#81766d]">{doc.chunks} chunks</p>
                         </div>
                       </label>
                     )
@@ -656,32 +504,17 @@ function App() {
         <section className="grid flex-1 gap-6 lg:grid-cols-[0.82fr_1.18fr]">
           <aside className="rounded-[1.75rem] border border-[#dacdbc] bg-white/65 p-5">
             <p className="text-xs uppercase tracking-[0.3em] text-ocean">Prompt deck</p>
-            <h2 className="mt-3 font-display text-3xl font-semibold text-ink">
-              Start with a strong ask
-            </h2>
+            <h2 className="mt-3 font-display text-3xl font-semibold text-ink">Start with a strong ask</h2>
             <div className="mt-6 space-y-3">
-              {quickPrompts.map((prompt) => (
-                <button
-                  key={prompt}
-                  type="button"
-                  onClick={() => setQuery(prompt)}
-                  className="w-full rounded-2xl border border-[#e8dccd] bg-[#fffaf3] px-4 py-4 text-left text-sm leading-6 text-[#534d57] transition hover:-translate-y-0.5 hover:border-ocean hover:bg-white"
-                >
-                  {prompt}
+              {quickPrompts.map((p) => (
+                <button key={p} onClick={() => setQuery(p)} className="w-full rounded-2xl border border-[#e8dccd] bg-[#fffaf3] px-4 py-4 text-left text-sm leading-6 text-[#534d57] transition hover:-translate-y-0.5 hover:border-ocean hover:bg-white">
+                  {p}
                 </button>
               ))}
             </div>
-
             <div className="mt-8 rounded-[1.5rem] bg-ink p-5 text-white">
-              <p className="text-xs uppercase tracking-[0.26em] text-white/45">
-                Latest answer snapshot
-              </p>
-              <p className="mt-4 text-sm leading-7 text-white/78">
-                {lastAssistantMessage || 'Your streamed answer will appear here as a quick glance card.'}
-              </p>
-              <p className="mt-4 text-xs uppercase tracking-[0.24em] text-white/45">
-                Active docs: {selectedDocuments.length ? selectedDocuments.join(', ') : 'none selected'}
-              </p>
+              <p className="text-xs uppercase tracking-[0.26em] text-white/45">Latest answer snapshot</p>
+              <p className="mt-4 text-sm leading-7 text-white/78">{lastAssistantMessage || 'Answer will appear here.'}</p>
             </div>
           </aside>
 
@@ -689,90 +522,30 @@ function App() {
             <div className="mb-4 flex items-center justify-between gap-4 px-1">
               <div>
                 <p className="text-xs uppercase tracking-[0.3em] text-ocean">Conversation</p>
-                <h2 className="mt-2 font-display text-3xl font-semibold text-ink">
-                  Streamed answers
-                </h2>
+                <h2 className="mt-2 font-display text-3xl font-semibold text-ink">Streamed answers</h2>
               </div>
-              <a
-                href="/swagger"
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-full border border-[#d9cab7] px-4 py-2 text-sm text-[#5f5860] transition hover:border-ocean hover:text-ocean"
-              >
-                API docs
-              </a>
             </div>
-
             <div className="flex-1 space-y-4 overflow-y-auto rounded-[1.5rem] bg-[#fffaf5] p-4">
-              {messages.map((message) => (
-                <article
-                  key={message.id ?? message.content}
-                  className={`max-w-[92%] rounded-[1.5rem] px-4 py-3 text-sm leading-7 shadow-sm ${
-                    message.role === 'user'
-                      ? 'ml-auto bg-ink text-white'
-                      : 'border border-[#eadfce] bg-white text-[#514a55]'
-                  }`}
-                >
-                  <p className="mb-2 text-[11px] uppercase tracking-[0.28em] opacity-55">
-                    {message.role === 'user' ? 'You' : 'Assistant'}
-                  </p>
-                  {message.role === 'assistant' ? (
+              {messages.map((m) => (
+                <article key={m.id || m.content} className={`max-w-[92%] rounded-[1.5rem] px-4 py-3 text-sm leading-7 shadow-sm ${m.role === 'user' ? 'ml-auto bg-ink text-white' : 'border border-[#eadfce] bg-white text-[#514a55]'}`}>
+                  <p className="mb-2 text-[11px] uppercase tracking-[0.28em] opacity-55">{m.role === 'user' ? 'You' : 'Assistant'}</p>
+                  {m.role === 'assistant' ? (
                     <div className="markdown-body">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {message.content || (isStreaming ? 'Thinking through your documents...' : '')}
-                      </ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content || (isStreaming ? 'Thinking...' : '')}</ReactMarkdown>
                     </div>
-                  ) : (
-                    <p className="whitespace-pre-wrap">{message.content}</p>
-                  )}
+                  ) : <p className="whitespace-pre-wrap">{m.content}</p>}
                 </article>
               ))}
             </div>
-
-            <form
-              className="mt-4 rounded-[1.5rem] border border-[#e1d5c6] bg-white p-3 shadow-sm"
-              onSubmit={(event) => {
-                event.preventDefault()
-                sendQuery(query)
-              }}
-            >
-              <label className="sr-only" htmlFor="query">
-                Ask a question
-              </label>
-              <textarea
-                id="query"
-                rows="4"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Ask a grounded question about the indexed document..."
-                className="w-full resize-none bg-transparent px-2 py-2 text-sm leading-7 text-ink outline-none placeholder:text-[#9b8f84]"
-              />
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+            <form className="mt-4 rounded-[1.5rem] border border-[#e1d5c6] bg-white p-3 shadow-sm" onSubmit={ge}>
+              <textarea value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Ask a question..." className="w-full resize-none bg-transparent px-2 py-2 text-sm leading-7 text-ink outline-none" rows="3" />
+              <div className="mt-3 flex items-center justify-between gap-3">
                 <p className="text-xs uppercase tracking-[0.24em] text-[#8d8277]">
-                  {isStreaming
-                    ? 'Streaming response...'
-                    : selectedDocuments.length
-                      ? `${selectedDocuments.length} document${selectedDocuments.length > 1 ? 's' : ''} selected`
-                      : 'Select documents to begin'}
+                  {isStreaming ? 'Streaming...' : `${selectedDocuments.length} docs selected`}
                 </p>
-                <div className="flex items-center gap-3">
-                  {isStreaming ? (
-                    <button
-                      type="button"
-                      onClick={() => abortRef.current?.abort()}
-                      className="rounded-full border border-[#d9cab7] px-4 py-2 text-sm text-[#5f5860] transition hover:border-ember hover:text-ember"
-                    >
-                      Stop
-                    </button>
-                  ) : null}
-                  <button
-                    type="submit"
-                    disabled={!query.trim() || isStreaming}
-                    className="rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-white transition hover:bg-ocean disabled:cursor-not-allowed disabled:bg-[#b9b1a8]"
-                  >
-                    Ask the vault
-                  </button>
-                </div>
+                <button type="submit" disabled={!query.trim() || isStreaming} className="rounded-full bg-ink px-5 py-2.5 text-sm font-medium text-white hover:bg-ocean transition disabled:bg-[#b9b1a8]">
+                  Ask the vault
+                </button>
               </div>
             </form>
           </section>
@@ -781,5 +554,3 @@ function App() {
     </main>
   )
 }
-
-export default App

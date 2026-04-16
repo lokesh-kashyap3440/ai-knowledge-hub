@@ -19,13 +19,23 @@ class PasswordChangePayload(BaseModel):
     new_password: str
 
 
+def normalize_username(username: str) -> str:
+    return username.strip().lower()
+
+
 @router.post("/register")
 def register(payload: Credentials, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.username == payload.username).first()
+    normalized_username = normalize_username(payload.username)
+    if not normalized_username:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username is required.")
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Password must be at least 8 characters.")
+
+    existing_user = db.query(User).filter(User.username == normalized_username).first()
     if existing_user:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists.")
 
-    user = User(username=payload.username, password_hash=hash_password(payload.password))
+    user = User(username=normalized_username, password_hash=hash_password(payload.password))
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -39,7 +49,8 @@ def register(payload: Credentials, db: Session = Depends(get_db)):
 
 @router.post("/login")
 def login(payload: Credentials, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == payload.username).first()
+    normalized_username = normalize_username(payload.username)
+    user = db.query(User).filter(User.username == normalized_username).first()
     if user is None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
 

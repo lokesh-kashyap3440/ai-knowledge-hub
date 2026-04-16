@@ -1,0 +1,31 @@
+import { generateId } from "./uuid"
+import { useEffect, useMemo, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+
+const quickPrompts = [
+  'Summarize the uploaded document in 5 bullets.',
+  'What are the key risks or action items?',
+  'Pull out the most important numbers and dates.',
+]
+
+const stats = [
+  { label: 'Search layer', value: 'ChromaDB' },
+  { label: 'Response mode', value: 'Streaming' },
+  { label: 'Upload flow', value: 'PDF ready' },
+]
+
+const storedToken = localStorage.getItem('akh_token') || ''
+
+const storedSessionId = localStorage.getItem('akh_session_id') || generateId()
+
+function getSessionId() {
+  const existing = localStorage.getItem('akh_session_id')
+  return existing ? existing : generateId()
+}
+
+if (!localStorage.getItem('akh_session_id')) {
+  localStorage.setItem('akh_session_id', getSessionId())
+}
+
+let sessionId = localStorage.getItem('akh_session_id')

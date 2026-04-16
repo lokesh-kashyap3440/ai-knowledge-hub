@@ -13,9 +13,22 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
+# CORS configuration - extended for development and production environments
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://localhost",
+        "http://127.0.0.1",
+        "http://ai_knowledge_hub_backend:8000",
+        "http://192.168.1.12:5173",
+        "https://brave.com",
+        "https://brave-intl.com",
+        "https://sso.brave.com",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

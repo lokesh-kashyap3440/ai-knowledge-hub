@@ -1,3 +1,4 @@
+from asyncio import get_running_loop
 from services.embedding import get_embedding
 from services.vectorstore import search
 from services.llm import client
@@ -63,7 +64,14 @@ Question:
         stream=True
     )
 
-    for chunk in stream:
+    # Run the synchronous stream in a thread to avoid blocking
+    loop = get_running_loop()
+    sync_gen = await loop.run_in_executor(None, lambda: list(stream))
+    
+    for chunk in sync_gen:
         delta = chunk.choices[0].delta.content
-        if delta:
+        if delta is not None:
             yield {"data": delta}
+        else:
+            # Yield empty delta to keep the stream alive (heartbeats)
+            yield {"data": ""}
